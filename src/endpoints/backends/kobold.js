@@ -5,11 +5,17 @@ import fetch from 'node-fetch';
 import { forwardFetchResponse, delay } from '../../util.js';
 import { getOverrideHeaders, setAdditionalHeaders, setAdditionalHeadersByType } from '../../additional-headers.js';
 import { TEXTGEN_TYPES } from '../../constants.js';
+import { generateRequestId, logInput, logOutput } from '../../prompt-logger.js';
 
 export const router = express.Router();
 
 router.post('/generate', async function (request, response_generate) {
     if (!request.body) return response_generate.sendStatus(400);
+
+    const promptLogRequestId = generateRequestId();
+    request.promptLogRequestId = promptLogRequestId;
+    response_generate.setHeader('X-Request-Id', promptLogRequestId);
+    logInput(request, promptLogRequestId, request.body, 'kobold');
 
     if (request.body.api_server.indexOf('localhost') != -1) {
         request.body.api_server = request.body.api_server.replace('localhost', '127.0.0.1');
@@ -117,6 +123,7 @@ router.post('/generate', async function (request, response_generate) {
 
                 const data = await response.json();
                 console.debug('Endpoint response:', data);
+                logOutput(request, promptLogRequestId, { raw_response: data });
                 return response_generate.send(data);
             }
         } catch (error) {
@@ -138,6 +145,18 @@ router.post('/generate', async function (request, response_generate) {
 
     console.error('Max retries exceeded. Giving up.');
     return response_generate.send({ error: true });
+});
+
+router.post('/generate/log-output', function (request, response) {
+    try {
+        const { request_id, output } = request.body;
+        if (!request_id || !output) return response.sendStatus(400);
+        logOutput(request, request_id, output);
+        return response.sendStatus(200);
+    } catch (error) {
+        console.error('prompt-logger: log-output failed:', error.message);
+        return response.sendStatus(500);
+    }
 });
 
 router.post('/status', async function (request, response) {

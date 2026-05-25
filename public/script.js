@@ -5223,7 +5223,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             break;
         }
         case 'openai': {
-            let [prompt, counts] = await prepareOpenAIMessages({
+            let [prompt, counts, messageIdentifiers] = await prepareOpenAIMessages({
                 name2: name2,
                 charDescription: description,
                 charPersonality: personality,
@@ -5242,6 +5242,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 messageExamples: oaiMessageExamples,
             }, dryRun);
             generate_data = { prompt: prompt };
+            // Attach identifiers for prompt-logger (will be stripped before API call)
+            if (messageIdentifiers) {
+                generate_data._message_identifiers = messageIdentifiers;
+            }
 
             // TODO: move these side-effects somewhere else, so this switch-case solely sets generate_data
             // counts will return false if the user has not enabled the token breakdown feature
@@ -6056,7 +6060,7 @@ function setInContextMessages(msgInContextCount, type) {
  */
 export async function sendGenerationRequest(type, data, options = {}) {
     if (main_api === 'openai') {
-        return await sendOpenAIRequest(type, data.prompt, abortController.signal, options);
+        return await sendOpenAIRequest(type, data.prompt, abortController.signal, { ...options, messageIdentifiers: data._message_identifiers });
     }
 
     if (main_api === 'koboldhorde') {
@@ -6092,7 +6096,7 @@ export async function sendStreamingRequest(type, data, options = {}) {
 
     switch (main_api) {
         case 'openai':
-            return await sendOpenAIRequest(type, data.prompt, streamingProcessor.abortController.signal, options);
+            return await sendOpenAIRequest(type, data.prompt, streamingProcessor.abortController.signal, { ...options, messageIdentifiers: data._message_identifiers });
         case 'textgenerationwebui':
             return await generateTextGenWithStreaming(data, streamingProcessor.abortController.signal);
         case 'novel':

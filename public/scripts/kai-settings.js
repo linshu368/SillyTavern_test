@@ -241,11 +241,20 @@ export async function generateKoboldWithStreaming(generate_data, signal) {
     response.body.pipeThrough(eventStream);
     const reader = eventStream.readable.getReader();
 
+    const promptLogRequestId = response.headers.get('X-Request-Id');
     return async function* streamData() {
         let text = '';
         while (true) {
             const { done, value } = await reader.read();
-            if (done) return;
+            if (done) {
+                if (promptLogRequestId && text) {
+                    fetch('/api/backends/kobold/generate/log-output', {
+                        method: 'POST', headers: getRequestHeaders(),
+                        body: JSON.stringify({ request_id: promptLogRequestId, output: { text } }),
+                    }).catch(err => console.error('prompt-logger:', err));
+                }
+                return;
+            }
 
             const data = JSON.parse(value.data);
             if (data?.token) {

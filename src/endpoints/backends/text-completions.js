@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import fetch from 'node-fetch';
 import express from 'express';
 import _ from 'lodash';
+import { generateRequestId, logInput, logOutput } from '../../prompt-logger.js';
 
 import {
     TEXTGEN_TYPES,
@@ -272,6 +273,11 @@ router.post('/props', async function (request, response) {
 router.post('/generate', async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
+    const promptLogRequestId = generateRequestId();
+    request.promptLogRequestId = promptLogRequestId;
+    response.setHeader('X-Request-Id', promptLogRequestId);
+    logInput(request, promptLogRequestId, request.body, 'text-completions');
+
     try {
         if (request.body.api_server.indexOf('localhost') !== -1) {
             request.body.api_server = request.body.api_server.replace('localhost', '127.0.0.1');
@@ -418,6 +424,7 @@ router.post('/generate', async function (request, response) {
                     data.choices = (data?.choices || []).map(choice => ({ text: choice?.message?.content || choice.text, logprobs: choice?.logprobs, index: choice?.index }));
                 }
 
+                logOutput(request, promptLogRequestId, { raw_response: data });
                 return response.send(data);
             } else {
                 const text = await completionsReply.text();
@@ -437,6 +444,18 @@ router.post('/generate', async function (request, response) {
         return !response.headersSent
             ? response.send(value)
             : response.end();
+    }
+});
+
+router.post('/generate/log-output', function (request, response) {
+    try {
+        const { request_id, output } = request.body;
+        if (!request_id || !output) return response.sendStatus(400);
+        logOutput(request, request_id, output);
+        return response.sendStatus(200);
+    } catch (error) {
+        console.error('prompt-logger: log-output failed:', error.message);
+        return response.sendStatus(500);
     }
 });
 

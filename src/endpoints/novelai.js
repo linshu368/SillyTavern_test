@@ -6,6 +6,7 @@ import express from 'express';
 
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { readAllChunks, extractFileFromZipBuffer, forwardFetchResponse } from '../util.js';
+import { generateRequestId, logInput, logOutput } from '../prompt-logger.js';
 
 const API_NOVELAI = 'https://api.novelai.net';
 const TEXT_NOVELAI = 'https://text.novelai.net';
@@ -257,6 +258,11 @@ router.post('/generate', async function (req, res) {
 
     console.debug(util.inspect(data, { depth: 4 }));
 
+    const promptLogRequestId = generateRequestId();
+    req.promptLogRequestId = promptLogRequestId;
+    res.setHeader('X-Request-Id', promptLogRequestId);
+    logInput(req, promptLogRequestId, req.body, 'novelai');
+
     const args = {
         body: JSON.stringify(data),
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api_key_novel },
@@ -290,10 +296,23 @@ router.post('/generate', async function (req, res) {
             /** @type {any} */
             const data = await response.json();
             console.info('NovelAI Output', data?.output);
+            logOutput(req, promptLogRequestId, { raw_response: data });
             return res.send(data);
         }
     } catch (error) {
         return res.send({ error: true });
+    }
+});
+
+router.post('/generate/log-output', function (req, res) {
+    try {
+        const { request_id, output } = req.body;
+        if (!request_id || !output) return res.sendStatus(400);
+        logOutput(req, request_id, output);
+        return res.sendStatus(200);
+    } catch (error) {
+        console.error('prompt-logger: log-output failed:', error.message);
+        return res.sendStatus(500);
     }
 });
 

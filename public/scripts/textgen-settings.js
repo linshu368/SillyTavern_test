@@ -1307,6 +1307,7 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
     response.body.pipeThrough(eventStream);
     const reader = eventStream.readable.getReader();
 
+    const promptLogRequestId = response.headers.get('X-Request-Id');
     return async function* streamData() {
         let text = '';
         /** @type {import('./logprobs.js').TokenLogprobs | null} */
@@ -1316,8 +1317,24 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
         const state = { reasoning: '' };
         while (true) {
             const { done, value } = await reader.read();
-            if (done) return;
-            if (value.data === '[DONE]') return;
+            if (done) {
+                if (promptLogRequestId && text) {
+                    fetch('/api/backends/text-completions/generate/log-output', {
+                        method: 'POST', headers: getRequestHeaders(),
+                        body: JSON.stringify({ request_id: promptLogRequestId, output: { text } }),
+                    }).catch(err => console.error('prompt-logger:', err));
+                }
+                return;
+            }
+            if (value.data === '[DONE]') {
+                if (promptLogRequestId && text) {
+                    fetch('/api/backends/text-completions/generate/log-output', {
+                        method: 'POST', headers: getRequestHeaders(),
+                        body: JSON.stringify({ request_id: promptLogRequestId, output: { text } }),
+                    }).catch(err => console.error('prompt-logger:', err));
+                }
+                return;
+            }
 
             tryParseStreamingError(response, value.data);
 

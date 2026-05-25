@@ -1605,13 +1605,14 @@ export async function prepareOpenAIMessages({
     }
 
     const chat = chatCompletion.getChat();
+    const messageIdentifiers = chatCompletion.getMessageIdentifiers();
 
     const eventData = { chat, dryRun };
     await eventSource.emit(event_types.CHAT_COMPLETION_PROMPT_READY, eventData);
 
     openai_messages_count = chat.filter(x => !x?.tool_calls && ['user', 'assistant', 'tool'].includes(x?.role)).length || 0;
 
-    return [chat, promptManager.tokenHandler.counts];
+    return [chat, promptManager.tokenHandler.counts, messageIdentifiers];
 }
 
 /**
@@ -3041,7 +3042,7 @@ export async function createGenerationParameters(settings, model, type, messages
  * @returns {Promise<unknown>}
  * @throws {Error}
  */
-async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } = {}) {
+async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, messageIdentifiers = null } = {}) {
     // Provide default abort signal
     if (!signal) {
         signal = new AbortController().signal;
@@ -3049,6 +3050,9 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
 
     const model = getChatCompletionModel(oai_settings);
     const { generate_data, stream, canMultiSwipe } = await createGenerationParameters(oai_settings, model, type, messages, { jsonSchema });
+    if (messageIdentifiers) {
+        generate_data._message_identifiers = messageIdentifiers;
+    }
     await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
 
     const generate_url = '/api/backends/chat-completions/generate';
@@ -3063,6 +3067,7 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);
     }
+    const promptLogRequestId = response.headers.get('X-Request-Id');
     if (stream) {
         const eventStream = getEventSourceStream();
         response.body.pipeThrough(eventStream);
@@ -3074,9 +3079,27 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
             const state = { reasoning: '', images: [], signature: '', toolSignatures: {} };
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) return;
+                if (done) {
+                    if (promptLogRequestId && text) {
+                        fetch('/api/backends/chat-completions/generate/log-output', {
+                            method: 'POST',
+                            headers: getRequestHeaders(),
+                            body: JSON.stringify({ request_id: promptLogRequestId, output: { text, reasoning: state.reasoning } }),
+                        }).catch(err => console.error('prompt-logger: failed to log streaming output', err));
+                    }
+                    return;
+                }
                 const rawData = value.data;
-                if (rawData === '[DONE]') return;
+                if (rawData === '[DONE]') {
+                    if (promptLogRequestId && text) {
+                        fetch('/api/backends/chat-completions/generate/log-output', {
+                            method: 'POST',
+                            headers: getRequestHeaders(),
+                            body: JSON.stringify({ request_id: promptLogRequestId, output: { text, reasoning: state.reasoning } }),
+                        }).catch(err => console.error('prompt-logger: failed to log streaming output', err));
+                    }
+                    return;
+                }
                 tryParseStreamingError(response, rawData);
                 const parsed = JSON.parse(rawData);
 
@@ -4043,6 +4066,22 @@ export class ChatCompletion {
             }
         }
         return chat;
+    }
+
+    getMessageIdentifiers() {
+        const identifiers = [];
+        for (let item of this.messages.collection) {
+            if (item instanceof MessageCollection) {
+                for (const msg of item.collection) {
+                    if (msg.content || msg.tool_calls) {
+                        identifiers.push(msg.identifier || null);
+                    }
+                }
+            } else if (item instanceof Message && (item.content || item.tool_calls)) {
+                identifiers.push(item.identifier || null);
+            }
+        }
+        return identifiers;
     }
 
     /**

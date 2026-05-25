@@ -4,6 +4,7 @@ import util from 'node:util';
 import express from 'express';
 import fetch from 'node-fetch';
 import urlJoin from 'url-join';
+import { generateRequestId, logInput, logOutput } from '../../prompt-logger.js';
 
 import {
     AIMLAPI_HEADERS,
@@ -2171,6 +2172,25 @@ router.post('/generate', async function (request, response) {
             request.body.json_schema.value = flattenSchema(request.body.json_schema.value, request.body.chat_completion_source);
         }
 
+        const promptLogRequestId = generateRequestId();
+        request.promptLogRequestId = promptLogRequestId;
+        response.setHeader('X-Request-Id', promptLogRequestId);
+        logInput(request, promptLogRequestId, request.body, 'chat-completions');
+        delete request.body._message_identifiers;
+
+        if (!request.body.stream) {
+            const originalSend = response.send.bind(response);
+            response.send = function (body) {
+                try {
+                    const data = typeof body === 'string' ? JSON.parse(body) : body;
+                    if (!data?.error) {
+                        logOutput(request, promptLogRequestId, { raw_response: data });
+                    }
+                } catch { /* ignore parse errors */ }
+                return originalSend(body);
+            };
+        }
+
         switch (request.body.chat_completion_source) {
             case CHAT_COMPLETION_SOURCES.CLAUDE: return await sendClaudeRequest(request, response);
             case CHAT_COMPLETION_SOURCES.AI21: return await sendAI21Request(request, response);
@@ -2626,6 +2646,18 @@ router.post('/generate', async function (request, response) {
         } else {
             response.end();
         }
+    }
+});
+
+router.post('/generate/log-output', function (request, response) {
+    try {
+        const { request_id, output } = request.body;
+        if (!request_id || !output) return response.sendStatus(400);
+        logOutput(request, request_id, output);
+        return response.sendStatus(200);
+    } catch (error) {
+        console.error('prompt-logger: log-output failed:', error.message);
+        return response.sendStatus(500);
     }
 });
 
